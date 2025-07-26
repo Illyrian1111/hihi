@@ -1,202 +1,245 @@
--- UDHL-DaHood-SilentUI.lua
--- Lade mit:
--- loadstring(game:HttpGet("https://raw.githubusercontent.com/Illyrian1111/hihi/main/main.lua", true))()
+-- UDHL-DaHood-ESP.lua
+-- Nur ESP mit einstellbaren Optionen
 
 --// Services
-local Players           = game:GetService("Players")
-local LocalPlayer       = Players.LocalPlayer
-local Camera            = workspace.CurrentCamera
-local RunService        = game:GetService("RunService")
-local UserInputService  = game:GetService("UserInputService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-
---// Remotes
-local ShootEvent = ReplicatedStorage:WaitForChild("ShootEvent")
+local Players          = game:GetService("Players")
+local LocalPlayer      = Players.LocalPlayer
+local Camera           = workspace.CurrentCamera
+local RunService       = game:GetService("RunService")
 
 --// Settings
 local Settings = {
-    FOV         = 50,                       -- Silent‑Aim FOV
-    ESP         = {Enabled = false},
-    SilentAim   = {Enabled = false},
-    Keys        = {ToggleMenu = Enum.KeyCode.T},
+    ESP = {
+        Enabled     = true,
+        Box         = true,
+        Skeleton    = false,
+        Circle      = false,
+        Name        = true,
+        Color       = Color3.fromRGB(255, 0, 0),
+        Distance    = 1000,
+        Thickness   = 2,
+        FontSize    = 14,
+    },
+    UI = {
+        ToggleKey   = Enum.KeyCode.T,
+    }
 }
 
 --// State
 local State = {
-    Target    = nil,
-    ESPBoxes  = {},  -- [player] = Drawing.Square
-    UIVisible = false,
+    ESPData = {},  -- [player] = {box, lines, circle, nameText}
+    UIVisible = true,
 }
 
---// Helpers
+--// Helper: World -> Screen
 local function worldToScreen(pos)
     return Camera:WorldToViewportPoint(pos)
 end
 
-local function inFOV(pos)
-    local camPos, camLook = Camera.CFrame.Position, Camera.CFrame.LookVector
-    local dir   = (pos - camPos).Unit
-    local angle = math.deg(math.acos(math.clamp(camLook:Dot(dir), -1, 1)))
-    return angle <= Settings.FOV
-end
-
-local function getClosest()
-    local best, bestAng = nil, Settings.FOV
-    local camPos, camLook = Camera.CFrame.Position, Camera.CFrame.LookVector
-    for _, pl in ipairs(Players:GetPlayers()) do
-        if pl ~= LocalPlayer and pl.Character and pl.Character:FindFirstChild("Head") then
-            local head = pl.Character.Head
-            local dir  = (head.Position - camPos).Unit
-            local ang  = math.deg(math.acos(math.clamp(camLook:Dot(dir), -1, 1)))
-            if ang < bestAng then
-                bestAng, best = ang, pl
-            end
-        end
-    end
-    return best
-end
-
---// Silent‑Aim Hook
-do
-    local mt, old = getrawmetatable(game), nil
-    old = mt.__namecall
-    setreadonly(mt,false)
-    mt.__namecall = newcclosure(function(self, ...)
-        local method, args = getnamecallmethod(), {...}
-        if not checkcaller()
-        and self == ShootEvent
-        and method == "FireServer"
-        and Settings.SilentAim.Enabled
-        and State.Target
-        and State.Target.Character
-        and State.Target.Character:FindFirstChild("Head") then
-
-            local pos = State.Target.Character.Head.Position
-            if inFOV(pos) then args[1] = pos end
-        end
-        return old(self, unpack(args))
-    end)
-    setreadonly(mt,true)
-end
-
---// ESP Setup
+--// Initialize ESP-Drawing-Objects
 local function initESP()
-    for _, pl in ipairs(Players:GetPlayers()) do
-        if pl~=LocalPlayer then
-            local box = Drawing.new("Square")
-            box.Thickness = 2
-            box.Filled    = false
-            box.Color     = Color3.fromRGB(255,0,0)
-            box.Visible   = false
-            State.ESPBoxes[pl] = box
+    local function makeFor(pl)
+        local data = {}
+
+        -- Box
+        data.box = Drawing.new("Square")
+        data.box.Thickness = Settings.ESP.Thickness
+        data.box.Filled    = false
+        data.box.Color     = Settings.ESP.Color
+        data.box.Visible   = false
+
+        -- Skeleton: 6 lines (head, torso, arms, legs)
+        data.lines = {}
+        for i = 1,6 do
+            local line = Drawing.new("Line")
+            line.Thickness = Settings.ESP.Thickness
+            line.Color     = Settings.ESP.Color
+            line.Visible   = false
+            table.insert(data.lines, line)
         end
+
+        -- Circle at root
+        data.circle = Drawing.new("Circle")
+        data.circle.Thickness = Settings.ESP.Thickness
+        data.circle.Radius     = 20
+        data.circle.Color      = Settings.ESP.Color
+        data.circle.Filled     = false
+        data.circle.Visible    = false
+
+        -- Name
+        data.nameText = Drawing.new("Text")
+        data.nameText.Size    = Settings.ESP.FontSize
+        data.nameText.Center  = true
+        data.nameText.Color   = Settings.ESP.Color
+        data.nameText.Visible = false
+        data.nameText.Text    = pl.Name
+
+        State.ESPData[pl] = data
+    end
+
+    for _, pl in ipairs(Players:GetPlayers()) do
+        if pl ~= LocalPlayer then makeFor(pl) end
     end
     Players.PlayerAdded:Connect(function(pl)
-        if pl~=LocalPlayer then initESP() end
+        if pl ~= LocalPlayer then makeFor(pl) end
     end)
     Players.PlayerRemoving:Connect(function(pl)
-        if State.ESPBoxes[pl] then
-            State.ESPBoxes[pl]:Remove()
-            State.ESPBoxes[pl] = nil
+        local d = State.ESPData[pl]
+        if d then
+            d.box:Remove()
+            for _, l in ipairs(d.lines) do l:Remove() end
+            d.circle:Remove()
+            d.nameText:Remove()
+            State.ESPData[pl] = nil
         end
     end)
 end
 
---// Build Menu UI
+--// Build simple UI zum Anpassen (Frame + Buttons)
 local function buildUI()
     local gui = Instance.new("ScreenGui")
-    gui.Name         = "SilentAimMenu"
+    gui.Name = "ESP_Config"
     gui.ResetOnSpawn = false
-    gui.Parent       = LocalPlayer:WaitForChild("PlayerGui")
+    gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
     local frame = Instance.new("Frame", gui)
-    frame.Size               = UDim2.new(0, 200, 0, 180)
-    frame.Position           = UDim2.new(0, 20, 0, 100)
-    frame.BackgroundColor3   = Color3.fromRGB(30,30,40)
-    frame.BorderSizePixel    = 0
+    frame.Size = UDim2.new(0, 220, 0, 180)
+    frame.Position = UDim2.new(0, 20, 0, 100)
+    frame.BackgroundColor3 = Color3.fromRGB(30,30,40)
+    frame.BackgroundTransparency = 0.2
 
-    local function newBtn(text, y, cb)
+    local function newToggle(label, y, settingKey)
         local btn = Instance.new("TextButton", frame)
-        btn.Size             = UDim2.new(1, -20, 0, 30)
-        btn.Position         = UDim2.new(0, 10, 0, y)
-        btn.BackgroundColor3 = Color3.fromRGB(50,50,60)
-        btn.BorderSizePixel  = 0
-        btn.Font             = Enum.Font.GothamBold
-        btn.TextSize         = 14
-        btn.TextColor3       = Color3.new(1,1,1)
-        btn.Text             = text
+        btn.Size = UDim2.new(1, -10, 0, 25)
+        btn.Position = UDim2.new(0, 5, 0, y)
+        btn.BackgroundTransparency = 0.3
+        btn.BorderSizePixel = 0
+        btn.Font = Enum.Font.GothamBold
+        btn.TextSize = 14
+        local function updateText()
+            btn.Text = label..": "..(Settings.ESP[settingKey] and "ON" or "OFF")
+        end
+        updateText()
         btn.MouseButton1Click:Connect(function()
-            cb(btn)
+            Settings.ESP[settingKey] = not Settings.ESP[settingKey]
+            updateText()
         end)
         return btn
     end
 
-    -- Silent‑Aim toggle
-    newBtn("Silent Aim: OFF", 10, function(self)
-        Settings.SilentAim.Enabled = not Settings.SilentAim.Enabled
-        self.Text = "Silent Aim: " .. (Settings.SilentAim.Enabled and "ON" or "OFF")
-    end)
-
-    -- ESP toggle
-    newBtn("ESP: OFF", 50, function(self)
-        Settings.ESP.Enabled = not Settings.ESP.Enabled
-        self.Text = "ESP: " .. (Settings.ESP.Enabled and "ON" or "OFF")
-    end)
-
-    -- Select Target
-    newBtn("Select Target", 90, function()
-        State.Target = getClosest()
-        targetLabel.Text = "Target: " .. (State.Target and State.Target.Name or "None")
-    end)
-
-    -- Target display
-    local targetLabel = Instance.new("TextLabel", frame)
-    targetLabel.Size                = UDim2.new(1, -20, 0, 25)
-    targetLabel.Position            = UDim2.new(0, 10, 0, 130)
-    targetLabel.BackgroundTransparency = 1
-    targetLabel.Font                = Enum.Font.GothamBold
-    targetLabel.TextSize            = 14
-    targetLabel.TextColor3          = Color3.new(1,1,1)
-    targetLabel.Text                = "Target: None"
-
-    -- Hide UI initially
-    gui.Enabled = State.UIVisible
-
-    return gui, targetLabel
+    newToggle("ESP",      10,  "Enabled")
+    newToggle("Box",      45,  "Box")
+    newToggle("Skeleton", 80,  "Skeleton")
+    newToggle("Circle",  115,  "Circle")
+    newToggle("Name",    150,  "Name")
+    return gui
 end
 
---// Input: toggle menu
-UserInputService.InputBegan:Connect(function(input, gp)
-    if gp then return end
-    if input.KeyCode == Settings.Keys.ToggleMenu then
-        State.UIVisible = not State.UIVisible
-        menu.Enabled    = State.UIVisible
-    end
-end)
-
---// Main Loop: ESP & highlight target
+--// Update ESP every Frame
 RunService.RenderStepped:Connect(function()
-    for pl, box in pairs(State.ESPBoxes) do
-        local hrp = pl.Character and pl.Character:FindFirstChild("HumanoidRootPart")
-        if Settings.ESP.Enabled and hrp then
-            local tl, v1 = worldToScreen(hrp.Position + Vector3.new(-1,3,0))
-            local br, v2 = worldToScreen(hrp.Position + Vector3.new( 1,-1,0))
-            if v1 and v2 then
-                box.Position = Vector2.new(tl.X, tl.Y)
-                box.Size     = Vector2.new(br.X - tl.X, br.Y - tl.Y)
-                box.Visible  = (hrp.Position - Camera.CFrame.Position).Magnitude <= Settings.ESP.Distance
-                box.Color    = (pl == State.Target)
-                    and Color3.fromRGB(0,255,0)
-                    or Color3.fromRGB(255,0,0)
+    for pl, data in pairs(State.ESPData) do
+        local char = pl.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if Settings.ESP.Enabled and root then
+            local dist = (root.Position - Camera.CFrame.Position).Magnitude
+            if dist <= Settings.ESP.Distance then
+                -- Berechne Screen-Positions
+                local topPos3D    = root.Position + Vector3.new(0, 3, 0)
+                local bottomPos3D = root.Position + Vector3.new(0, -1, 0)
+                local headPos3D   = char.Head and char.Head.Position or topPos3D
+
+                local tl, vis1 = worldToScreen(topPos3D)
+                local br, vis2 = worldToScreen(bottomPos3D)
+                local head2d, vis3 = worldToScreen(headPos3D)
+
+                if vis1 and vis2 then
+                    -- Box
+                    if Settings.ESP.Box then
+                        data.box.Position = Vector2.new(tl.X, tl.Y)
+                        data.box.Size     = Vector2.new(br.X - tl.X, br.Y - tl.Y)
+                        data.box.Color    = Settings.ESP.Color
+                        data.box.Visible  = true
+                    else
+                        data.box.Visible = false
+                    end
+
+                    -- Skeleton (einfach: Kopf-Torso und Arme/Beine)
+                    if Settings.ESP.Skeleton then
+                        local midNP = (topPos3D + bottomPos3D) / 2
+                        local mid2d, _ = worldToScreen(midNP)
+                        local root2d = Vector2.new((tl.X+br.X)/2, (tl.Y+br.Y)/2)
+                        -- Kopf zu Torso
+                        local segs = {
+                            {head2d, mid2d},
+                            {mid2d, root2d},
+                            -- Beine
+                            {root2d, Vector2.new(root2d.X - 10, br.Y)},
+                            {root2d, Vector2.new(root2d.X + 10, br.Y)},
+                            -- Arme
+                            {mid2d, Vector2.new(mid2d.X - 15, mid2d.Y + 20)},
+                            {mid2d, Vector2.new(mid2d.X + 15, mid2d.Y + 20)},
+                        }
+                        for i, seg in ipairs(segs) do
+                            local l = data.lines[i]
+                            l.From = seg[1]
+                            l.To   = seg[2]
+                            l.Color    = Settings.ESP.Color
+                            l.Visible  = true
+                        end
+                    else
+                        for _, l in ipairs(data.lines) do l.Visible = false end
+                    end
+
+                    -- Circle
+                    if Settings.ESP.Circle then
+                        data.circle.Position = Vector2.new((tl.X+br.X)/2, (tl.Y+br.Y)/2)
+                        data.circle.Radius   = (br.Y - tl.Y)/2
+                        data.circle.Color    = Settings.ESP.Color
+                        data.circle.Visible  = true
+                    else
+                        data.circle.Visible = false
+                    end
+
+                    -- Name
+                    if Settings.ESP.Name then
+                        data.nameText.Position = Vector2.new((tl.X+br.X)/2, tl.Y - 10)
+                        data.nameText.Color    = Settings.ESP.Color
+                        data.nameText.Visible  = true
+                    else
+                        data.nameText.Visible = false
+                    end
+                else
+                    -- Außerhalb des Bildschirms
+                    data.box.Visible = false
+                    for _, l in ipairs(data.lines) do l.Visible = false end
+                    data.circle.Visible = false
+                    data.nameText.Visible = false
+                end
             else
-                box.Visible = false
+                -- Zu weit weg
+                data.box.Visible = false
+                for _, l in ipairs(data.lines) do l.Visible = false end
+                data.circle.Visible = false
+                data.nameText.Visible = false
             end
         else
-            box.Visible = false
+            -- ESP global deaktiviert oder kein HumanoidRootPart
+            data.box.Visible = false
+            for _, l in ipairs(data.lines) do l.Visible = false end
+            data.circle.Visible = false
+            data.nameText.Visible = false
         end
     end
 end)
 
---// Init
+--// Setup
 initESP()
-local menu, targetLabel = buildUI()
+local ui = buildUI()
+
+-- UI Toggle
+local UserInputService = game:GetService("UserInputService")
+UserInputService.InputBegan:Connect(function(input, gp)
+    if not gp and input.KeyCode == Settings.UI.ToggleKey then
+        ui.Enabled = not ui.Enabled
+    end
+end)
